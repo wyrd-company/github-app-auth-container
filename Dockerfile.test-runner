@@ -1,0 +1,31 @@
+# Dockerfile.test-runner
+# Container that runs e2e tests against the auth service
+
+FROM golang:1.22-alpine
+
+# Install dependencies
+RUN apk add --no-cache \
+    git \
+    curl \
+    jq \
+    && rm -rf /var/cache/apk/*
+
+WORKDIR /app
+
+# Copy source for go mod tidy
+COPY go.mod go.sum ./
+COPY internal/ ./internal/
+COPY cmd/ ./cmd/
+COPY tests/ ./tests/
+
+# Download dependencies
+RUN go mod tidy
+
+# Create results directory
+RUN mkdir -p /app/test-results
+
+# Set environment
+ENV CGO_ENABLED=0
+
+# Run tests
+CMD ["go", "test", "-v", "-count=1", "-timeout=5m", "./tests/...", "-json"]

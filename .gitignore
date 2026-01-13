@@ -1,0 +1,55 @@
+# Binaries
+github-auth-service
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config overrides
+config/config.local.yaml
+config/agents.local.yaml
+
+# Secrets (never commit these)
+*.pem
+*.asc
+*.key
+
+# GPG
+.gnupg/
+
+# Docker
+.docker/
+
+# Temporary files
+tmp/
+temp/
+
+# Environment files with secrets
+.env
+.env.local
+.env.test
+
+# Test artifacts
+test-results/
+coverage/

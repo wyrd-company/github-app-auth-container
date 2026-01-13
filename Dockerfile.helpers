@@ -1,0 +1,38 @@
+# Dockerfile.helpers
+# Builds git helper binaries for use in agent containers
+#
+# Usage:
+#   docker build -f Dockerfile.helpers -t github-auth-helpers .
+#
+# In agent Dockerfiles:
+#   FROM github-auth-helpers:latest AS helpers
+#   FROM python:3.12-slim
+#   COPY --from=helpers /usr/local/bin/git-* /usr/local/bin/
+
+# Build stage
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /app
+
+# Copy source
+COPY . .
+
+# Download dependencies
+RUN go mod tidy
+
+# Build static binaries (no CGO, no external dependencies)
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /git-credential-github-app ./cmd/git-credential-github-app
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /git-ssh-sign ./cmd/git-ssh-sign
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /gh-github-app ./cmd/gh-github-app
+
+# Final stage - scratch image with just the binaries
+FROM scratch
+
+# Copy binaries
+COPY --from=builder /git-credential-github-app /usr/local/bin/git-credential-github-app
+COPY --from=builder /git-ssh-sign /usr/local/bin/git-ssh-sign
+COPY --from=builder /gh-github-app /usr/local/bin/gh-github-app
+
+# This image is not meant to be run directly - it's a source for COPY --from=
+# But we set an entrypoint anyway for debugging
+ENTRYPOINT ["/usr/local/bin/git-credential-github-app"]

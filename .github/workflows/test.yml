@@ -1,0 +1,157 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      enable_github_api_tests:
+        description: 'Run tests against real GitHub API'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  # Test configuration
+  TEST_VAULT_EMAIL: test@localhost
+  TEST_VAULT_PASSWORD: test-password-ci
+  VAULTWARDEN_ADMIN_TOKEN: ci-admin-token-${{ github.run_id }}
+  TEST_AGENT_NAME: CI Test Agent
+  TEST_AGENT_EMAIL: ci-agent@test.local
+
+jobs:
+  e2e-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create .env file
+        run: |
+          cat > .env << EOF
+          TEST_VAULT_EMAIL=${{ env.TEST_VAULT_EMAIL }}
+          TEST_VAULT_PASSWORD=${{ env.TEST_VAULT_PASSWORD }}
+          VAULTWARDEN_ADMIN_TOKEN=${{ env.VAULTWARDEN_ADMIN_TOKEN }}
+          TEST_AGENT_NAME=${{ env.TEST_AGENT_NAME }}
+          TEST_AGENT_EMAIL=${{ env.TEST_AGENT_EMAIL }}
+          TEST_GITHUB_APP_ID=${{ secrets.TEST_GITHUB_APP_ID }}
+          TEST_GITHUB_INSTALLATION_ID=${{ secrets.TEST_GITHUB_INSTALLATION_ID }}
+          TEST_GITHUB_PRIVATE_KEY_B64=${{ secrets.TEST_GITHUB_PRIVATE_KEY_B64 }}
+          TEST_GITHUB_API_ENABLED=${{ github.event.inputs.enable_github_api_tests || 'false' }}
+          EOF
+
+      - name: Validate secrets are configured
+        run: |
+          if [ -z "${{ secrets.TEST_GITHUB_APP_ID }}" ]; then
+            echo "::warning::TEST_GITHUB_APP_ID secret not configured - some tests will be skipped"
+          fi
+          if [ -z "${{ secrets.TEST_GITHUB_INSTALLATION_ID }}" ]; then
+            echo "::warning::TEST_GITHUB_INSTALLATION_ID secret not configured - some tests will be skipped"
+          fi
+          if [ -z "${{ secrets.TEST_GITHUB_PRIVATE_KEY_B64 }}" ]; then
+            echo "::warning::TEST_GITHUB_PRIVATE_KEY_B64 secret not configured - some tests will be skipped"
+          fi
+
+      - name: Build containers
+        run: |
+          docker-compose -f docker-compose.test.yml build
+
+      - name: Start test infrastructure
+        run: |
+          docker-compose -f docker-compose.test.yml up -d vaultwarden
+
+          # Wait for Vaultwarden
+          echo "Waiting for Vaultwarden..."
+          timeout 60 bash -c 'until curl -sf http://localhost:80/alive 2>/dev/null; do sleep 2; done' || {
+            docker-compose -f docker-compose.test.yml logs vaultwarden
+            exit 1
+          }
+          echo "Vaultwarden is ready"
+
+      - name: Seed vault with test credentials
+        if: ${{ secrets.TEST_GITHUB_APP_ID != '' }}
+        run: |
+          docker-compose -f docker-compose.test.yml up vault-seeder
+
+          # Check seeder exit code
+          EXIT_CODE=$(docker inspect test-vault-seeder --format='{{.State.ExitCode}}')
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Vault seeder failed"
+            docker-compose -f docker-compose.test.yml logs vault-seeder
+            exit 1
+          fi
+
+      - name: Start auth service
+        run: |
+          docker-compose -f docker-compose.test.yml up -d github-auth-service
+
+          # Wait for auth service
+          echo "Waiting for auth service..."
+          timeout 60 bash -c 'until curl -sf http://localhost:8080/health 2>/dev/null; do sleep 2; done' || {
+            docker-compose -f docker-compose.test.yml logs github-auth-service
+            exit 1
+          }
+          echo "Auth service is ready"
+
+      - name: Run e2e tests
+        run: |
+          docker-compose -f docker-compose.test.yml up test-runner
+
+          # Get test results
+          EXIT_CODE=$(docker inspect test-runner --format='{{.State.ExitCode}}')
+
+          # Show logs
+          docker-compose -f docker-compose.test.yml logs test-runner
+
+          exit $EXIT_CODE
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Vaultwarden logs ==="
+          docker-compose -f docker-compose.test.yml logs vaultwarden
+          echo ""
+          echo "=== Vault seeder logs ==="
+          docker-compose -f docker-compose.test.yml logs vault-seeder
+          echo ""
+          echo "=== Auth service logs ==="
+          docker-compose -f docker-compose.test.yml logs github-auth-service
+          echo ""
+          echo "=== Test runner logs ==="
+          docker-compose -f docker-compose.test.yml logs test-runner
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose -f docker-compose.test.yml down -v --remove-orphans
+
+  # Build-only job for PRs without secrets
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        run: |
+          go build -v ./...
+
+      - name: Run unit tests
+        run: |
+          go test -v -short ./...
+
+      - name: Build Docker image
+        run: |
+          docker build -t github-app-auth-container:test .

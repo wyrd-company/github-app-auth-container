@@ -1,0 +1,72 @@
+#!/bin/sh
+# GPG wrapper that forwards signing requests to the GitHub App auth service.
+#
+# This script intercepts GPG signing operations and forwards them to the auth service,
+# while passing through other GPG operations to the real gpg binary.
+#
+# Usage:
+#   git config --global gpg.program gpg-auth-service
+#
+# Environment:
+#   GITHUB_AUTH_SERVICE - URL of the auth service (default: http://github-auth-service:8080)
+#   GPG_REAL_PATH - Path to real gpg binary (default: /usr/bin/gpg)
+
+AUTH_SERVICE="${GITHUB_AUTH_SERVICE:-http://github-auth-service:8080}"
+GPG_REAL="${GPG_REAL_PATH:-/usr/bin/gpg}"
+
+# Check if this is a signing operation
+is_signing=false
+detach_sign=false
+for arg in "$@"; do
+    case "$arg" in
+        --sign|-s|--detach-sign|-b|--clear-sign)
+            is_signing=true
+            ;;
+        --detach-sign|-b)
+            detach_sign=true
+            ;;
+    esac
+done
+
+if [ "$is_signing" = "true" ]; then
+    # Read data from stdin
+    data=$(cat)
+
+    # Determine sign mode
+    mode="detach"
+    if [ "$detach_sign" = "false" ]; then
+        mode="clear"
+    fi
+
+    # Escape data for JSON
+    json_data=$(printf '%s' "$data" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+
+    # Request signature from auth service
+    response=$(curl -s -X POST "${AUTH_SERVICE}/api/v1/gpg/sign" \
+        -H "Content-Type: application/json" \
+        -d "{\"data\":\"${json_data}\",\"mode\":\"${mode}\"}" \
+        2>/dev/null)
+
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to contact auth service" >&2
+        exit 1
+    fi
+
+    # Check for error response
+    if echo "$response" | grep -q '"error"'; then
+        echo "Error: $(echo "$response" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)" >&2
+        exit 1
+    fi
+
+    # Extract and output signature
+    # This is a simple extraction - for complex signatures, use jq if available
+    if command -v jq >/dev/null 2>&1; then
+        echo "$response" | jq -r '.signature'
+    else
+        # Fallback: extract signature using sed
+        echo "$response" | sed 's/.*"signature":"//' | sed 's/".*//' | sed 's/\\n/\n/g'
+    fi
+else
+    # Pass through to real gpg for non-signing operations
+    exec "$GPG_REAL" "$@"
+fi

@@ -1,0 +1,31 @@
+# Dockerfile.test-seeder
+# Container that seeds Vaultwarden with test credentials
+
+FROM node:20-alpine
+
+# Install dependencies and build tools for Bitwarden CLI (argon2 needs compilation on ARM)
+RUN apk add --no-cache \
+    bash \
+    curl \
+    jq \
+    openssl \
+    python3 \
+    make \
+    g++ \
+    && npm install -g @bitwarden/cli@2024.2.0 \
+    && apk del python3 make g++ \
+    && rm -rf /var/cache/apk/* /root/.npm /tmp/*
+
+# Create output directory
+RUN mkdir -p /output
+
+# Copy scripts
+COPY scripts/seed-vault.sh /usr/local/bin/seed-vault.sh
+COPY scripts/register-user.js /usr/local/bin/register-user.js
+RUN chmod +x /usr/local/bin/seed-vault.sh
+
+# Set environment
+ENV OUTPUT_DIR=/output
+
+# Run the seeder
+CMD ["/usr/local/bin/seed-vault.sh"]

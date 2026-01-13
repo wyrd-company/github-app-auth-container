@@ -1,0 +1,128 @@
+version: '3.8'
+
+# E2E Test Stack
+# Usage:
+#   1. Copy .env.example to .env and fill in test credentials
+#   2. Run: docker-compose -f docker-compose.test.yml up --build --exit-code-from test-runner
+#   3. Check exit code of test-runner
+
+services:
+  # ==========================================================================
+  # Vaultwarden - Test Bitwarden Server
+  # ==========================================================================
+  vaultwarden:
+    image: vaultwarden/server:1.30.1
+    container_name: test-vaultwarden
+    environment:
+      - ADMIN_TOKEN=${VAULTWARDEN_ADMIN_TOKEN}
+      - SIGNUPS_ALLOWED=true
+      - WEBSOCKET_ENABLED=false
+      - LOG_LEVEL=warn
+      - SENDS_ALLOWED=false
+      - EMERGENCY_ACCESS_ALLOWED=false
+      - ORG_CREATION_USERS=none
+    volumes:
+      - vaultwarden-data:/data
+    ports:
+      - "80:80"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/alive"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ==========================================================================
+  # Vault Seeder - Populates Vaultwarden with test credentials
+  # ==========================================================================
+  vault-seeder:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-seeder
+    container_name: test-vault-seeder
+    environment:
+      - VAULTWARDEN_URL=http://vaultwarden:80
+      - VAULTWARDEN_ADMIN_TOKEN=${VAULTWARDEN_ADMIN_TOKEN}
+      - TEST_VAULT_EMAIL=${TEST_VAULT_EMAIL}
+      - TEST_VAULT_PASSWORD=${TEST_VAULT_PASSWORD}
+      - TEST_GITHUB_APP_ID=${TEST_GITHUB_APP_ID}
+      - TEST_GITHUB_INSTALLATION_ID=${TEST_GITHUB_INSTALLATION_ID}
+      - TEST_GITHUB_PRIVATE_KEY_B64=${TEST_GITHUB_PRIVATE_KEY_B64}
+      - TEST_AGENT_NAME=${TEST_AGENT_NAME:-test-agent}
+      - TEST_AGENT_EMAIL=${TEST_AGENT_EMAIL:-test@example.com}
+    volumes:
+      - seeder-output:/output
+      - bw-config:/root/.config/Bitwarden CLI
+    networks:
+      - test-network
+    depends_on:
+      vaultwarden:
+        condition: service_healthy
+
+  # ==========================================================================
+  # GitHub Auth Service - The service under test
+  # ==========================================================================
+  github-auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: test-github-auth-service
+    user: root  # Use root for testing to share BW config with seeder
+    environment:
+      - BW_SESSION_FILE=/output/session.txt
+      - BW_COLLECTION_ID_FILE=/output/collection_id.txt
+      - BW_SERVER_URL=http://vaultwarden:80
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - seeder-output:/output:ro
+      - bw-config:/root/.config/Bitwarden CLI
+    ports:
+      - "8080:8080"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    depends_on:
+      vault-seeder:
+        condition: service_completed_successfully
+      vaultwarden:
+        condition: service_healthy
+
+  # ==========================================================================
+  # Test Runner - Executes e2e tests
+  # ==========================================================================
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-runner
+    container_name: test-runner
+    environment:
+      - GITHUB_AUTH_SERVICE=http://github-auth-service:8080
+      - TEST_AGENT_NAME=${TEST_AGENT_NAME:-test-agent}
+      - TEST_AGENT_TOKEN_FILE=/output/agent_token.txt
+      - TEST_GITHUB_API_ENABLED=${TEST_GITHUB_API_ENABLED:-false}
+    volumes:
+      - ./tests:/app/tests:ro
+      - seeder-output:/output:ro
+      - test-results:/app/test-results
+    networks:
+      - test-network
+    depends_on:
+      github-auth-service:
+        condition: service_healthy
+
+networks:
+  test-network:
+    driver: bridge
+
+volumes:
+  vaultwarden-data:
+  seeder-output:
+  test-results:
+  bw-config:
