@@ -71,9 +71,7 @@ func getEnvOrFile(envKey, fileEnvKey string) string {
 func (c *Config) Validate() error {
 	switch c.SecretsBackend {
 	case "bitwarden":
-		if c.CollectionID == "" {
-			return &ConfigError{Field: "BW_COLLECTION_ID", Message: "required when SECRETS_BACKEND=bitwarden"}
-		}
+		// CollectionID is optional — empty means load all items from personal vault
 	case "vault":
 		if c.VaultBasePath == "" {
 			return &ConfigError{Field: "VAULT_BASE_PATH", Message: "required when SECRETS_BACKEND=vault"}

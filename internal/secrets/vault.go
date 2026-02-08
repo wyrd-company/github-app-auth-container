@@ -76,7 +76,7 @@ func (v *VaultBackend) GetItems(ctx context.Context, scope string) ([]*Item, err
 	}
 
 	if secret == nil || secret.Data == nil {
-		return nil, fmt.Errorf("no secrets found at path %s", listPath)
+		return []*Item{}, nil
 	}
 
 	keys, ok := secret.Data["keys"].([]interface{})

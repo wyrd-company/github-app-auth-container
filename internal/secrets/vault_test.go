@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 )
 
@@ -73,8 +72,7 @@ func TestVaultBackend_GetItems(t *testing.T) {
 	defer server.Close()
 
 	// Set VAULT_TOKEN for the backend constructor
-	os.Setenv("VAULT_TOKEN", "test-token")
-	defer os.Unsetenv("VAULT_TOKEN")
+	t.Setenv("VAULT_TOKEN", "test-token")
 
 	backend, err := NewVaultBackend(server.URL, "secret")
 	if err != nil {
@@ -150,8 +148,7 @@ func TestVaultBackend_GetItems_SkipsDirectories(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	os.Setenv("VAULT_TOKEN", "test-token")
-	defer os.Unsetenv("VAULT_TOKEN")
+	t.Setenv("VAULT_TOKEN", "test-token")
 
 	backend, err := NewVaultBackend(server.URL, "secret")
 	if err != nil {
@@ -182,8 +179,7 @@ func TestVaultBackend_GetAttachment_ReturnsError(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	os.Setenv("VAULT_TOKEN", "test-token")
-	defer os.Unsetenv("VAULT_TOKEN")
+	t.Setenv("VAULT_TOKEN", "test-token")
 
 	backend, err := NewVaultBackend(server.URL, "secret")
 	if err != nil {
@@ -207,8 +203,7 @@ func TestVaultBackend_Close(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	os.Setenv("VAULT_TOKEN", "test-token")
-	defer os.Unsetenv("VAULT_TOKEN")
+	t.Setenv("VAULT_TOKEN", "test-token")
 
 	backend, err := NewVaultBackend(server.URL, "secret")
 	if err != nil {
@@ -231,8 +226,7 @@ func TestVaultBackend_Name(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	os.Setenv("VAULT_TOKEN", "test-token")
-	defer os.Unsetenv("VAULT_TOKEN")
+	t.Setenv("VAULT_TOKEN", "test-token")
 
 	backend, err := NewVaultBackend(server.URL, "secret")
 	if err != nil {
@@ -245,8 +239,8 @@ func TestVaultBackend_Name(t *testing.T) {
 }
 
 func TestNewVaultBackend_MissingToken(t *testing.T) {
-	os.Unsetenv("VAULT_TOKEN")
-	os.Unsetenv("VAULT_TOKEN_FILE")
+	t.Setenv("VAULT_TOKEN", "")
+	t.Setenv("VAULT_TOKEN_FILE", "")
 
 	_, err := NewVaultBackend("http://localhost:8200", "secret")
 	if err == nil {

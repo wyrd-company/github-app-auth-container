@@ -10,7 +10,7 @@ on:
       enable_github_api_tests:
         description: 'Run tests against real GitHub API'
         required: false
-        default: 'false'
+        default: false
         type: boolean
 
 env:
@@ -171,7 +171,6 @@ jobs:
           echo "Vault is ready"
 
       - name: Seed Vault with test credentials
-        if: ${{ secrets.TEST_GITHUB_APP_ID != '' }}
         run: |
           docker-compose -f docker-compose.test-vault.yml up vault-seeder
 

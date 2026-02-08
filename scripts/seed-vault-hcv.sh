@@ -30,9 +30,6 @@ RETRY_INTERVAL=2
 required_vars=(
     "VAULT_ADDR"
     "VAULT_TOKEN"
-    "TEST_GITHUB_APP_ID"
-    "TEST_GITHUB_INSTALLATION_ID"
-    "TEST_GITHUB_PRIVATE_KEY_B64"
     "TEST_AGENT_NAME"
 )
 
@@ -42,6 +39,10 @@ for var in "${required_vars[@]}"; do
         exit 1
     fi
 done
+
+# Apply defaults for optional GitHub App settings (allows CI without real secrets)
+TEST_GITHUB_APP_ID="${TEST_GITHUB_APP_ID:-123456}"
+TEST_GITHUB_INSTALLATION_ID="${TEST_GITHUB_INSTALLATION_ID:-78901234}"
 
 # Wait for Vault to be ready
 echo "Waiting for Vault at ${VAULT_ADDR}..."
@@ -64,7 +65,7 @@ if [ -n "${EXISTING_TOKEN}" ]; then
     echo "Agent secret already exists in Vault, skipping seed."
     mkdir -p "${OUTPUT_DIR}"
     echo "${EXISTING_TOKEN}" > "${OUTPUT_DIR}/agent_token.txt"
-    chmod 644 "${OUTPUT_DIR}/agent_token.txt"
+    chmod 600 "${OUTPUT_DIR}/agent_token.txt"
     echo "${TEST_AGENT_NAME}" > "${OUTPUT_DIR}/agent_name.txt"
     chmod 644 "${OUTPUT_DIR}/agent_name.txt"
     echo ""
@@ -129,7 +130,7 @@ echo "Exporting outputs..."
 mkdir -p "${OUTPUT_DIR}"
 
 echo "${AGENT_TOKEN}" > "${OUTPUT_DIR}/agent_token.txt"
-chmod 644 "${OUTPUT_DIR}/agent_token.txt"
+chmod 600 "${OUTPUT_DIR}/agent_token.txt"
 
 echo "${TEST_AGENT_NAME}" > "${OUTPUT_DIR}/agent_name.txt"
 chmod 644 "${OUTPUT_DIR}/agent_name.txt"

@@ -33,7 +33,7 @@ Required fields:
 | `app_id` | GitHub App ID |
 | `installation_id` | GitHub App Installation ID |
 | `agent_token` | RSA-SHA256 signature of the agent name, base64-encoded |
-| `private_key` | PEM-encoded RSA private key (newlines escaped as `\n`) |
+| `private_key` | PEM-encoded RSA private key |
 | `identity_name` | Git commit author name |
 | `identity_email` | Git commit author email |
 
@@ -43,19 +43,16 @@ Required fields:
 # 1. Generate the agent token (sign agent name with the App's private key)
 AGENT_TOKEN=$(echo -n "my-agent" | openssl dgst -sha256 -sign private-key.pem | base64 | tr -d '\n')
 
-# 2. Escape newlines in the private key for Vault storage
-PRIVATE_KEY=$(awk '{printf "%s\\n", $0}' private-key.pem)
-
-# 3. Write the secret to Vault
+# 2. Write the secret to Vault (@ reads the file contents directly)
 vault kv put secret/agents/my-agent \
     app_id="123456" \
     installation_id="78901234" \
     agent_token="${AGENT_TOKEN}" \
-    private_key="${PRIVATE_KEY}" \
+    private_key=@private-key.pem \
     identity_name="My Agent" \
     identity_email="my-agent@users.noreply.github.com"
 
-# 4. Verify it was written
+# 3. Verify it was written
 vault kv get secret/agents/my-agent
 ```
 
