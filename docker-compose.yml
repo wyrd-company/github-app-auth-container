@@ -2,12 +2,20 @@ version: '3.8'
 
 # Production deployment configuration
 #
-# Required environment variables:
+# Secrets Backend: Set SECRETS_BACKEND to "bitwarden" (default) or "vault"
+#
+# Bitwarden backend required environment variables:
 #   BW_SESSION - Bitwarden session token
 #   BW_COLLECTION_ID - Bitwarden collection containing agent items
 #
+# HashiCorp Vault backend required environment variables:
+#   VAULT_ADDR - Vault server address
+#   VAULT_TOKEN - Vault authentication token
+#
 # Optional environment variables:
 #   BW_SERVER_URL - Bitwarden/Vaultwarden server URL (default: bitwarden.com)
+#   VAULT_MOUNT_PATH - Vault KV v2 mount path (default: secret)
+#   VAULT_BASE_PATH - Vault path for agent secrets (default: agents)
 #   GITHUB_API_URL - GitHub API URL (default: https://api.github.com)
 #   LOG_LEVEL - Logging level: INFO or DEBUG (default: INFO)
 
@@ -18,11 +26,19 @@ services:
       dockerfile: Dockerfile
     container_name: github-auth-service
     environment:
-      # Required
-      - BW_SESSION=${BW_SESSION}
-      - BW_COLLECTION_ID=${BW_COLLECTION_ID}
-      # Optional
+      # Secrets backend selection (uncomment one option)
+      # Option 1: Bitwarden (default)
+      - SECRETS_BACKEND=${SECRETS_BACKEND:-bitwarden}
+      - BW_SESSION=${BW_SESSION:-}
+      - BW_COLLECTION_ID=${BW_COLLECTION_ID:-}
       - BW_SERVER_URL=${BW_SERVER_URL:-}
+      # Option 2: HashiCorp Vault (uncomment and set these instead)
+      # - SECRETS_BACKEND=vault
+      - VAULT_ADDR=${VAULT_ADDR:-}
+      - VAULT_TOKEN=${VAULT_TOKEN:-}
+      # - VAULT_MOUNT_PATH=secret
+      # - VAULT_BASE_PATH=agents
+      # Common
       - GITHUB_API_URL=${GITHUB_API_URL:-https://api.github.com}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     networks:

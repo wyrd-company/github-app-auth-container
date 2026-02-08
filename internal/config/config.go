@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strconv"
 	"time"
@@ -14,9 +15,17 @@ type Config struct {
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 
-	// Bitwarden settings
+	// Secrets backend selection: "bitwarden" (default) or "vault"
+	SecretsBackend string
+
+	// Bitwarden settings (used when SecretsBackend == "bitwarden")
 	BitwardenServerURL string
 	CollectionID       string
+
+	// HashiCorp Vault settings (used when SecretsBackend == "vault")
+	VaultAddr      string
+	VaultMountPath string
+	VaultBasePath  string
 
 	// GitHub API settings
 	GitHubAPIURL string
@@ -31,8 +40,12 @@ func Load() *Config {
 		Port:               getEnvInt("PORT", 8080),
 		ReadTimeout:        getEnvDuration("READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:       getEnvDuration("WRITE_TIMEOUT", 30*time.Second),
+		SecretsBackend:     getEnvString("SECRETS_BACKEND", "bitwarden"),
 		BitwardenServerURL: os.Getenv("BW_SERVER_URL"),
 		CollectionID:       getEnvOrFile("BW_COLLECTION_ID", "BW_COLLECTION_ID_FILE"),
+		VaultAddr:          os.Getenv("VAULT_ADDR"),
+		VaultMountPath:     getEnvString("VAULT_MOUNT_PATH", "secret"),
+		VaultBasePath:      getEnvString("VAULT_BASE_PATH", "agents"),
 		GitHubAPIURL:       getEnvString("GITHUB_API_URL", "https://api.github.com"),
 		LogLevel:           getEnvString("LOG_LEVEL", "INFO"),
 	}
@@ -56,8 +69,20 @@ func getEnvOrFile(envKey, fileEnvKey string) string {
 
 // Validate checks that required configuration is present.
 func (c *Config) Validate() error {
-	if c.CollectionID == "" {
-		return &ConfigError{Field: "BW_COLLECTION_ID", Message: "required"}
+	switch c.SecretsBackend {
+	case "bitwarden":
+		if c.CollectionID == "" {
+			return &ConfigError{Field: "BW_COLLECTION_ID", Message: "required when SECRETS_BACKEND=bitwarden"}
+		}
+	case "vault":
+		if c.VaultBasePath == "" {
+			return &ConfigError{Field: "VAULT_BASE_PATH", Message: "required when SECRETS_BACKEND=vault"}
+		}
+	default:
+		return &ConfigError{
+			Field:   "SECRETS_BACKEND",
+			Message: fmt.Sprintf("unsupported backend: %s (must be 'bitwarden' or 'vault')", c.SecretsBackend),
+		}
 	}
 	return nil
 }

@@ -16,7 +16,7 @@ import (
 
 // AgentSecrets holds all secrets for a single agent, loaded at startup.
 type AgentSecrets struct {
-	Name           string          // Agent name (from Bitwarden item name)
+	Name           string          // Agent name (from secrets backend item name)
 	AppID          string          // GitHub App ID
 	InstallationID string          // GitHub App Installation ID
 	PrivateKey     *rsa.PrivateKey // Parsed RSA private key
@@ -45,26 +45,17 @@ func NewStore() *Store {
 	}
 }
 
-// LoadFromBitwarden fetches all agent secrets from a Bitwarden collection,
-// stores them in memory, and logs out the session.
-func (s *Store) LoadFromBitwarden(ctx context.Context, backend *BitwardenBackend, collectionID string) error {
-	slog.Info("loading secrets from Bitwarden collection", "collection_id", collectionID)
+// LoadFromBackend fetches all agent secrets from the given backend,
+// stores them in memory, and closes the backend session.
+func (s *Store) LoadFromBackend(ctx context.Context, backend SecretsBackend, scope string) error {
+	slog.Info("loading secrets from backend", "backend", backend.Name(), "scope", scope)
 
-	var items []*Item
-	var err error
-
-	// Handle personal vault (no collection) vs organization collection
-	if collectionID == "PERSONAL_VAULT" || collectionID == "" {
-		slog.Info("using personal vault - listing all items")
-		items, err = backend.ListAllItems(ctx)
-	} else {
-		items, err = backend.GetCollectionItems(ctx, collectionID)
-	}
+	items, err := backend.GetItems(ctx, scope)
 	if err != nil {
-		return fmt.Errorf("failed to get items: %w", err)
+		return fmt.Errorf("failed to get items from %s: %w", backend.Name(), err)
 	}
 
-	slog.Info("found items in collection", "count", len(items))
+	slog.Info("found items", "count", len(items), "backend", backend.Name())
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -87,23 +78,22 @@ func (s *Store) LoadFromBitwarden(ctx context.Context, backend *BitwardenBackend
 		)
 	}
 
-	// Logout the Bitwarden session
-	if err := backend.Logout(ctx); err != nil {
-		slog.Warn("failed to logout Bitwarden session", "error", err)
-		// Don't fail - secrets are already loaded
+	// Close the backend session
+	if err := backend.Close(ctx); err != nil {
+		slog.Warn("failed to close backend session", "backend", backend.Name(), "error", err)
 	} else {
-		slog.Info("Bitwarden session closed")
+		slog.Info("backend session closed", "backend", backend.Name())
 	}
 
 	if len(s.agents) == 0 {
-		return fmt.Errorf("no agents loaded from collection")
+		return fmt.Errorf("no agents loaded from %s", backend.Name())
 	}
 
 	return nil
 }
 
-// parseAgentItem converts a Bitwarden item into AgentSecrets.
-func (s *Store) parseAgentItem(ctx context.Context, backend *BitwardenBackend, item *Item) (*AgentSecrets, error) {
+// parseAgentItem converts a secrets backend item into AgentSecrets.
+func (s *Store) parseAgentItem(ctx context.Context, backend SecretsBackend, item *Item) (*AgentSecrets, error) {
 	agent := &AgentSecrets{
 		Name: item.Name,
 	}
