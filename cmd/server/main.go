@@ -36,20 +36,39 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize Bitwarden backend
-	slog.Info("connecting to Bitwarden...")
-	bwBackend, err := secrets.NewBitwardenBackend(cfg.BitwardenServerURL)
+	// Initialize secrets backend
+	var backend secrets.SecretsBackend
+	var scope string
+	var err error
+
+	switch cfg.SecretsBackend {
+	case "bitwarden":
+		slog.Info("connecting to Bitwarden...")
+		backend, err = secrets.NewBitwardenBackend(cfg.BitwardenServerURL)
+		scope = cfg.CollectionID
+	case "vault":
+		slog.Info("connecting to HashiCorp Vault...")
+		backend, err = secrets.NewVaultBackend(cfg.VaultAddr, cfg.VaultMountPath)
+		scope = cfg.VaultBasePath
+	}
+
 	if err != nil {
-		slog.Error("failed to initialize Bitwarden backend", "error", err)
+		slog.Error("failed to initialize secrets backend",
+			"backend", cfg.SecretsBackend,
+			"error", err,
+		)
 		os.Exit(1)
 	}
 
 	// Create secrets store and load all agents
 	store := secrets.NewStore()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	if err := store.LoadFromBitwarden(ctx, bwBackend, cfg.CollectionID); err != nil {
+	if err := store.LoadFromBackend(ctx, backend, scope); err != nil {
 		cancel()
-		slog.Error("failed to load secrets from Bitwarden", "error", err)
+		slog.Error("failed to load secrets",
+			"backend", cfg.SecretsBackend,
+			"error", err,
+		)
 		os.Exit(1)
 	}
 	cancel()

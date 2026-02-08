@@ -9,22 +9,23 @@ This is a Go REST API service that provides GitHub App authentication and SSH co
 ## Architecture
 
 ```
-Agent Container                    Auth Service                 Bitwarden
-     │                                  │                           │
-     │  X-Agent-Name + X-Agent-Token    │                           │
-     ├─────────────────────────────────►│                           │
-     │                                  │   (startup only)          │
-     │                                  │◄──────────────────────────┤
-     │         Installation Token       │                           │
-     │◄─────────────────────────────────┤                           │
-     │                                  │                           │
+Agent Container                    Auth Service           Secrets Backend
+     │                                  │               (Bitwarden or Vault)
+     │  X-Agent-Name + X-Agent-Token    │                       │
+     ├─────────────────────────────────►│                       │
+     │                                  │   (startup only)      │
+     │                                  │◄──────────────────────┤
+     │         Installation Token       │                       │
+     │◄─────────────────────────────────┤                       │
+     │                                  │                       │
 ```
 
 **Key design decisions:**
 - **Token-based auth**: Agents authenticate with pre-signed tokens, not IP-based identification
-- **Fetch-at-startup**: All secrets loaded from Bitwarden at startup, session closed immediately
+- **Pluggable backends**: SecretsBackend interface supports Bitwarden and HashiCorp Vault
+- **Fetch-at-startup**: All secrets loaded from backend at startup, session closed immediately
 - **SSH signing**: Uses the GitHub App's RSA private key for commit signing (not GPG)
-- **Collection-based config**: Agents defined by Bitwarden collection contents, not a config file
+- **Scope-based config**: Agents defined by collection (Bitwarden) or path (Vault) contents
 
 ## Directory Structure
 
@@ -38,10 +39,11 @@ Agent Container                    Auth Service                 Bitwarden
 │   ├── api/                    # HTTP handlers, middleware, router
 │   ├── config/                 # Environment variable loading
 │   ├── github/                 # GitHub API client, JWT generation, token caching
-│   ├── secrets/                # Bitwarden backend, in-memory store
+│   ├── secrets/                # Secrets backends (Bitwarden, Vault), in-memory store
 │   └── ssh/                    # SSH signature generation
 ├── scripts/
-│   └── seed-vault.sh           # Test setup: seeds Vaultwarden with test data
+│   ├── seed-vault.sh           # Test setup: seeds Vaultwarden with test data
+│   └── seed-vault-hcv.sh       # Test setup: seeds HashiCorp Vault with test data
 ├── tests/
 │   └── e2e_test.go             # End-to-end tests
 └── examples/
@@ -52,8 +54,10 @@ Agent Container                    Auth Service                 Bitwarden
 
 | File | Purpose |
 |------|---------|
+| `internal/secrets/backend.go` | SecretsBackend interface, shared types |
 | `internal/secrets/store.go` | In-memory secrets store, token verification |
-| `internal/secrets/bitwarden.go` | Bitwarden CLI wrapper |
+| `internal/secrets/bitwarden.go` | Bitwarden CLI backend |
+| `internal/secrets/vault.go` | HashiCorp Vault KV v2 backend |
 | `internal/api/middleware.go` | Token authentication middleware |
 | `internal/api/handlers.go` | REST API endpoint handlers |
 | `internal/github/service.go` | GitHub JWT generation and token fetching |
@@ -82,17 +86,27 @@ All `/api/v1/*` endpoints require `X-Agent-Name` and `X-Agent-Token` headers.
 
 ## Testing
 
-E2E tests use Vaultwarden (self-hosted Bitwarden) in Docker Compose:
+E2E tests run against both backends:
 
 ```bash
-docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit
+# Bitwarden backend (Vaultwarden)
+make test-e2e
+
+# HashiCorp Vault backend
+make test-e2e-vault
 ```
 
-The test stack:
+The Bitwarden test stack (`docker-compose.test.yml`):
 1. `vaultwarden` - Test Bitwarden server
 2. `vault-seeder` - Populates test credentials
 3. `github-auth-service` - Service under test
 4. `test-runner` - Executes Go tests
+
+The Vault test stack (`docker-compose.test-vault.yml`):
+1. `vault-server` - HashiCorp Vault dev server
+2. `vault-seeder` - Populates test credentials
+3. `github-auth-service` - Service under test (SECRETS_BACKEND=vault)
+4. `test-runner` - Executes Go tests (same tests, backend-agnostic)
 
 ## Common Tasks
 
@@ -103,11 +117,19 @@ The test stack:
 3. Register route in `internal/api/router.go`
 4. Add test in `tests/e2e_test.go`
 
-### Modifying Bitwarden item structure
+### Modifying agent item structure
 
 1. Update `parseAgentItem()` in `internal/secrets/store.go`
-2. Update `scripts/seed-vault.sh` for test seeding
+2. Update `scripts/seed-vault.sh` (Bitwarden) and `scripts/seed-vault-hcv.sh` (Vault) for test seeding
 3. Update README.md documentation
+
+### Adding a new secrets backend
+
+1. Implement `SecretsBackend` interface in `internal/secrets/<backend>.go`
+2. Add config fields in `internal/config/config.go`
+3. Add case to the backend selection switch in `cmd/server/main.go`
+4. Add e2e test infrastructure (docker-compose, seeder script)
+5. Update documentation
 
 ### Adding a new helper binary
 
@@ -119,15 +141,21 @@ The test stack:
 
 - `github.com/go-chi/chi/v5` - HTTP router
 - `github.com/golang-jwt/jwt/v5` - JWT generation for GitHub App auth
+- `github.com/hashicorp/vault/api` - HashiCorp Vault client
 - `golang.org/x/crypto/ssh` - SSH key handling and signatures
 
 ## Environment Variables
 
 The service reads all config from environment variables (no config files):
 
-- `BW_SESSION` / `BW_SESSION_FILE` - Bitwarden session token
-- `BW_COLLECTION_ID` / `BW_COLLECTION_ID_FILE` - Collection containing agent items
-- `BW_SERVER_URL` - Optional Vaultwarden URL
+- `SECRETS_BACKEND` - `bitwarden` (default) or `vault`
+- `BW_SESSION` / `BW_SESSION_FILE` - Bitwarden session token (bitwarden backend)
+- `BW_COLLECTION_ID` / `BW_COLLECTION_ID_FILE` - Collection containing agent items (bitwarden backend)
+- `BW_SERVER_URL` - Optional Vaultwarden URL (bitwarden backend)
+- `VAULT_ADDR` - Vault server address (vault backend)
+- `VAULT_TOKEN` / `VAULT_TOKEN_FILE` - Vault auth token (vault backend)
+- `VAULT_MOUNT_PATH` - KV v2 mount path, default `secret` (vault backend)
+- `VAULT_BASE_PATH` - Base path for agents, default `agents` (vault backend)
 - `GITHUB_API_URL` - Optional GitHub Enterprise URL
 - `LOG_LEVEL` - INFO or DEBUG
 - `PORT` - Server port (default 8080)
@@ -138,4 +166,6 @@ The service reads all config from environment variables (no config files):
 - There is no Docker socket access - authentication is token-based
 - GPG is NOT used - SSH signing with the GitHub App's RSA key
 - The Bitwarden CLI is called via `exec.Command`, not a Go library
+- The Vault backend uses the `hashicorp/vault/api` Go client (no CLI needed)
 - Secrets are loaded once at startup and held in memory
+- Backend selection is via `SECRETS_BACKEND` env var, defaulting to `bitwarden`

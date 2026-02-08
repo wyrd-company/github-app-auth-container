@@ -39,21 +39,8 @@ type bwAttachment struct {
 	Size     int64  `json:"size"`
 }
 
-// Item represents a secrets item with fields and attachments.
-type Item struct {
-	ID          string
-	Name        string
-	Fields      map[string]string
-	Attachments []AttachmentInfo
-	Notes       string
-}
-
-// AttachmentInfo holds metadata about an attachment.
-type AttachmentInfo struct {
-	ID       string
-	FileName string
-	Size     int64
-}
+// Compile-time interface check.
+var _ SecretsBackend = (*BitwardenBackend)(nil)
 
 // NewBitwardenBackend creates a new Bitwarden secrets backend.
 func NewBitwardenBackend(serverURL string) (*BitwardenBackend, error) {
@@ -295,4 +282,23 @@ func (b *BitwardenBackend) GetAttachment(ctx context.Context, itemID, attachment
 	}
 
 	return data, nil
+}
+
+// GetItems retrieves all agent items, delegating to ListAllItems or GetCollectionItems
+// based on the scope parameter (Bitwarden collection ID).
+func (b *BitwardenBackend) GetItems(ctx context.Context, scope string) ([]*Item, error) {
+	if scope == "PERSONAL_VAULT" || scope == "" {
+		return b.ListAllItems(ctx)
+	}
+	return b.GetCollectionItems(ctx, scope)
+}
+
+// Close locks the Bitwarden vault and clears the session.
+func (b *BitwardenBackend) Close(ctx context.Context) error {
+	return b.Logout(ctx)
+}
+
+// Name returns the backend name for logging.
+func (b *BitwardenBackend) Name() string {
+	return "bitwarden"
 }

@@ -1,0 +1,116 @@
+version: '3.8'
+
+# E2E Test Stack (HashiCorp Vault backend)
+# Usage:
+#   1. Copy .env.example to .env and fill in test credentials
+#   2. Run: docker-compose -f docker-compose.test-vault.yml up --build --exit-code-from test-runner
+#   3. Check exit code of test-runner
+
+services:
+  # ==========================================================================
+  # HashiCorp Vault - Dev Server
+  # ==========================================================================
+  vault-server:
+    image: hashicorp/vault:1.15
+    container_name: test-vault-server
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=test-root-token
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+      - VAULT_ADDR=http://127.0.0.1:8200
+    ports:
+      - "8200:8200"
+    cap_add:
+      - IPC_LOCK
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # ==========================================================================
+  # Vault Seeder - Populates Vault with test credentials
+  # ==========================================================================
+  vault-seeder:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-seeder-vault
+    container_name: test-vault-seeder-hcv
+    environment:
+      - VAULT_ADDR=http://vault-server:8200
+      - VAULT_TOKEN=test-root-token
+      - TEST_GITHUB_APP_ID=${TEST_GITHUB_APP_ID}
+      - TEST_GITHUB_INSTALLATION_ID=${TEST_GITHUB_INSTALLATION_ID}
+      - TEST_GITHUB_PRIVATE_KEY_B64=${TEST_GITHUB_PRIVATE_KEY_B64}
+      - TEST_AGENT_NAME=${TEST_AGENT_NAME:-test-agent}
+      - TEST_AGENT_EMAIL=${TEST_AGENT_EMAIL:-test@example.com}
+    volumes:
+      - seeder-output:/output
+    networks:
+      - test-network
+    depends_on:
+      vault-server:
+        condition: service_healthy
+
+  # ==========================================================================
+  # GitHub Auth Service - The service under test (Vault backend)
+  # ==========================================================================
+  github-auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: test-github-auth-service-vault
+    environment:
+      - SECRETS_BACKEND=vault
+      - VAULT_ADDR=http://vault-server:8200
+      - VAULT_TOKEN=test-root-token
+      - VAULT_BASE_PATH=agents
+      - BW_COLLECTION_ID=unused
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8080:8080"
+    networks:
+      - test-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    depends_on:
+      vault-seeder:
+        condition: service_completed_successfully
+      vault-server:
+        condition: service_healthy
+
+  # ==========================================================================
+  # Test Runner - Executes e2e tests (same as Bitwarden stack)
+  # ==========================================================================
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-runner
+    container_name: test-runner-vault
+    environment:
+      - GITHUB_AUTH_SERVICE=http://github-auth-service:8080
+      - TEST_AGENT_NAME=${TEST_AGENT_NAME:-test-agent}
+      - TEST_AGENT_TOKEN_FILE=/output/agent_token.txt
+      - TEST_GITHUB_API_ENABLED=${TEST_GITHUB_API_ENABLED:-false}
+    volumes:
+      - seeder-output:/output:ro
+      - test-results:/app/test-results
+    networks:
+      - test-network
+    depends_on:
+      github-auth-service:
+        condition: service_healthy
+
+networks:
+  test-network:
+    driver: bridge
+
+volumes:
+  seeder-output:
+  test-results:

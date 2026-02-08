@@ -16,8 +16,9 @@ A REST API service that provides GitHub App authentication tokens and SSH commit
 │           │                                                 │
 │           ▼                                                 │
 │  ┌──────────────────┐                                      │
-│  │   Bitwarden CLI  │  (secrets fetched at startup,        │
-│  │                  │   session closed immediately)        │
+│  │ Secrets Backend  │  (secrets fetched at startup,        │
+│  │ Bitwarden or     │   session closed immediately)        │
+│  │ HashiCorp Vault  │                                      │
 │  └──────────────────┘                                      │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -27,8 +28,8 @@ A REST API service that provides GitHub App authentication tokens and SSH commit
 - **GitHub App Installation Tokens**: Agents request tokens for GitHub API/git operations
 - **SSH Commit Signing**: Sign commits using the same private key as the GitHub App
 - **Token-Based Auth**: Agents authenticate with pre-signed tokens (no Docker socket needed)
-- **Secrets from Bitwarden**: All credentials stored in a Bitwarden collection
-- **Fetch-at-Startup**: Secrets loaded once, Bitwarden session closed immediately
+- **Pluggable Secrets Backend**: Store credentials in Bitwarden/Vaultwarden or HashiCorp Vault
+- **Fetch-at-Startup**: Secrets loaded once, backend session closed immediately
 - **Helper Binaries**: Static Go binaries for git credential/signing helpers
 
 ## Quick Start
@@ -41,11 +42,12 @@ A REST API service that provides GitHub App authentication tokens and SSH commit
 4. Install the app on your repository/organization
 5. Note the App ID and Installation ID
 
-### 2. Store Credentials in Bitwarden
+### 2. Store Credentials
 
-Create a Bitwarden item in a collection with:
+Choose a secrets backend — Bitwarden/Vaultwarden or HashiCorp Vault.
 
-**Custom Fields:**
+Each agent needs these fields:
+
 | Field | Value |
 |-------|-------|
 | `app_id` | Your GitHub App ID |
@@ -53,14 +55,7 @@ Create a Bitwarden item in a collection with:
 | `agent_token` | Pre-signed token (see below) |
 | `identity_name` | Git commit author name |
 | `identity_email` | Git commit author email |
-| `private_key` | PEM-encoded private key (option 1) |
-
-**Attachments (alternative to field):**
-| File | Contents |
-|------|----------|
-| `private-key.pem` | GitHub App private key (option 2) |
-
-> **Note:** You can store the private key either as a custom field (`private_key`) or as an attachment. The field option is simpler; the attachment option keeps the key separate from other metadata.
+| `private_key` | PEM-encoded private key |
 
 **Generate agent token:**
 ```bash
@@ -68,10 +63,28 @@ Create a Bitwarden item in a collection with:
 echo -n "agent-name" | openssl dgst -sha256 -sign private-key.pem | base64 | tr -d '\n'
 ```
 
+#### Option A: Bitwarden / Vaultwarden
+
+Create a Bitwarden item in a collection with the fields above as custom fields. The private key can also be stored as an attachment named `private-key.pem`.
+
+#### Option B: HashiCorp Vault
+
+Store each agent as a KV v2 secret at `secret/agents/<agent-name>`:
+
+```bash
+vault kv put secret/agents/my-agent \
+    app_id=123456 \
+    installation_id=78901234 \
+    agent_token=$(echo -n "my-agent" | openssl dgst -sha256 -sign key.pem | base64 | tr -d '\n') \
+    private_key=@private-key.pem \
+    identity_name="My Agent" \
+    identity_email="my-agent@example.com"
+```
+
 ### 3. Run the Auth Service
 
+**With Bitwarden:**
 ```yaml
-# docker-compose.yml
 services:
   github-auth-service:
     image: ghcr.io/youruser/github-app-auth-container:latest
@@ -81,10 +94,21 @@ services:
       - BW_SERVER_URL=${BW_SERVER_URL:-}  # Optional: for Vaultwarden
     networks:
       - agent-network
+```
 
-networks:
-  agent-network:
-    driver: bridge
+**With HashiCorp Vault:**
+```yaml
+services:
+  github-auth-service:
+    image: ghcr.io/youruser/github-app-auth-container:latest
+    environment:
+      - SECRETS_BACKEND=vault
+      - VAULT_ADDR=https://vault.example.com
+      - VAULT_TOKEN=${VAULT_TOKEN}
+      # - VAULT_MOUNT_PATH=secret    # default
+      # - VAULT_BASE_PATH=agents     # default
+    networks:
+      - agent-network
 ```
 
 ### 4. Configure Agent Containers
@@ -116,245 +140,22 @@ services:
       - agent-network
 ```
 
-## API Reference
+## Documentation
 
-### Health Check
+- [Setting Up HashiCorp Vault](docs/vault.md) — configuring Vault as the secrets backend
+- [API Reference](docs/api.md) — all REST endpoints with request/response examples
+- [Configuration](docs/configuration.md) — environment variables for the auth service and agent containers
+- [Helper Binaries](docs/helpers.md) — git credential helper, SSH signing, and GitHub CLI wrapper
 
-```
-GET /health
-```
+## Contributing
 
-No authentication required.
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "agent_count": 3,
-  "version": "1.0.0"
-}
-```
-
-### Get Installation Token
-
-```
-GET /api/v1/token
-POST /api/v1/token
-```
-
-**Headers:**
-- `X-Agent-Name`: Agent identifier
-- `X-Agent-Token`: Pre-signed authentication token
-
-**Optional POST body** (for scoped tokens):
-```json
-{
-  "repositories": ["repo-name"],
-  "permissions": {"contents": "read"}
-}
-```
-
-**Response:**
-```json
-{
-  "token": "ghs_xxxxxxxxxxxx",
-  "expires_at": "2024-01-15T12:00:00Z",
-  "permissions": {"contents": "write"},
-  "repository_selection": "all"
-}
-```
-
-### Git Credentials
-
-```
-POST /api/v1/git-credentials
-```
-
-**Request:**
-```json
-{
-  "protocol": "https",
-  "host": "github.com",
-  "path": "owner/repo"
-}
-```
-
-**Response:**
-```json
-{
-  "protocol": "https",
-  "host": "github.com",
-  "username": "x-access-token",
-  "password": "ghs_xxxxxxxxxxxx"
-}
-```
-
-### Identity
-
-```
-GET /api/v1/identity
-```
-
-**Response:**
-```json
-{
-  "agent_name": "agent-claude-1",
-  "identity": {
-    "name": "Claude Agent 1",
-    "email": "claude-1@users.noreply.github.com"
-  },
-  "ssh_key_id": "SHA256:xxxxxxxx"
-}
-```
-
-### SSH Sign
-
-```
-POST /api/v1/ssh/sign
-```
-
-**Request:**
-```json
-{
-  "data": "data to sign",
-  "namespace": "git"
-}
-```
-
-**Response:**
-```json
-{
-  "signature": "-----BEGIN SSH SIGNATURE-----\n...",
-  "key_id": "SHA256:xxxxxxxx",
-  "signer_identity": {
-    "name": "Claude Agent 1",
-    "email": "claude-1@users.noreply.github.com"
-  }
-}
-```
-
-### SSH Public Key
-
-```
-GET /api/v1/ssh/public-key
-```
-
-**Response:**
-```json
-{
-  "public_key": "ssh-rsa AAAAB3...",
-  "key_id": "SHA256:xxxxxxxx",
-  "identity": {
-    "name": "Claude Agent 1",
-    "email": "claude-1@users.noreply.github.com"
-  }
-}
-```
-
-## Environment Variables
-
-### Auth Service
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `BW_SESSION` | Yes* | Bitwarden session token |
-| `BW_SESSION_FILE` | Yes* | Path to file containing session token |
-| `BW_COLLECTION_ID` | No** | Bitwarden collection ID |
-| `BW_COLLECTION_ID_FILE` | No** | Path to file containing collection ID |
-| `BW_SERVER_URL` | No | Bitwarden/Vaultwarden server URL |
-| `GITHUB_API_URL` | No | GitHub API URL (default: https://api.github.com) |
-| `LOG_LEVEL` | No | `INFO` or `DEBUG` (default: INFO) |
-| `PORT` | No | Server port (default: 8080) |
-
-*Either the variable or its `_FILE` variant is required.
-
-**If omitted or set to `PERSONAL_VAULT`, the service will load all items from the personal vault instead of a specific collection. This is useful for Vaultwarden setups where organization/collection creation is limited.
-
-### Agent Containers
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GITHUB_AUTH_SERVICE` | Yes | URL of the auth service |
-| `AGENT_NAME` | Yes | Agent identifier (must match Bitwarden item name) |
-| `AGENT_TOKEN` | Yes | Pre-signed authentication token |
-
-## Helper Binaries
-
-The helpers image (`github-app-auth-container-helpers`) contains static Go binaries:
-
-| Binary | Purpose |
-|--------|---------|
-| `git-credential-github-app` | Git credential helper |
-| `git-ssh-sign` | SSH signing program for git |
-| `gh-github-app` | GitHub CLI wrapper with automatic auth |
-
-### Git Configuration
-
-```bash
-git config --global credential.helper github-app
-git config --global gpg.format ssh
-git config --global gpg.ssh.program git-ssh-sign
-```
-
-### GitHub CLI Wrapper
-
-The `gh-github-app` binary wraps the GitHub CLI, automatically fetching a token from the auth service:
-
-```bash
-# Use directly
-gh-github-app repo list
-gh-github-app pr create --title "Fix bug" --body "Description"
-
-# Or alias it
-alias gh='gh-github-app'
-gh issue list
-```
-
-Note: The `gh` CLI must be installed separately in your agent container.
-
-## Development
-
-### Prerequisites
-
-- Go 1.22+
-- Docker & Docker Compose
-- A Bitwarden/Vaultwarden account
-
-### Running Tests
-
-```bash
-# Copy and configure test environment
-cp .env.example .env
-# Edit .env with your test credentials
-
-# Run e2e tests with Vaultwarden
-./scripts/run-e2e-tests.sh
-```
-
-### Building
-
-```bash
-# Build auth service
-docker build -t github-app-auth-container .
-
-# Build helpers
-docker build -f Dockerfile.helpers -t github-app-auth-container-helpers .
-```
-
-### Publishing
-
-Tag with a semantic version to trigger the publish workflow:
-
-```bash
-git tag 1.0.0
-git push origin 1.0.0
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, building, and testing instructions.
 
 ## Security Considerations
 
 - **Network Isolation**: The auth service should only be accessible from trusted agent containers via a private Docker network
 - **Token Verification**: Agent tokens are cryptographically signed with the GitHub App private key
-- **No Persistent Sessions**: Bitwarden session is closed immediately after loading secrets
+- **No Persistent Sessions**: Backend sessions are closed immediately after loading secrets
 - **Secrets in Memory**: Private keys are held in memory only, never written to disk in the container
 
 ## License

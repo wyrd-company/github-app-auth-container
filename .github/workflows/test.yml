@@ -10,7 +10,7 @@ on:
       enable_github_api_tests:
         description: 'Run tests against real GitHub API'
         required: false
-        default: 'false'
+        default: false
         type: boolean
 
 env:
@@ -132,6 +132,94 @@ jobs:
         run: |
           docker-compose -f docker-compose.test.yml down -v --remove-orphans
 
+  # E2E tests with HashiCorp Vault backend
+  e2e-test-vault:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create .env file
+        run: |
+          cat > .env << EOF
+          TEST_AGENT_NAME=${{ env.TEST_AGENT_NAME }}
+          TEST_AGENT_EMAIL=${{ env.TEST_AGENT_EMAIL }}
+          TEST_GITHUB_APP_ID=${{ secrets.TEST_GITHUB_APP_ID }}
+          TEST_GITHUB_INSTALLATION_ID=${{ secrets.TEST_GITHUB_INSTALLATION_ID }}
+          TEST_GITHUB_PRIVATE_KEY_B64=${{ secrets.TEST_GITHUB_PRIVATE_KEY_B64 }}
+          TEST_GITHUB_API_ENABLED=false
+          EOF
+
+      - name: Build containers
+        run: |
+          docker-compose -f docker-compose.test-vault.yml build
+
+      - name: Start Vault server
+        run: |
+          docker-compose -f docker-compose.test-vault.yml up -d vault-server
+
+          echo "Waiting for Vault..."
+          timeout 30 bash -c 'until curl -sf http://localhost:8200/v1/sys/health 2>/dev/null; do sleep 1; done' || {
+            docker-compose -f docker-compose.test-vault.yml logs vault-server
+            exit 1
+          }
+          echo "Vault is ready"
+
+      - name: Seed Vault with test credentials
+        run: |
+          docker-compose -f docker-compose.test-vault.yml up vault-seeder
+
+          EXIT_CODE=$(docker inspect test-vault-seeder-hcv --format='{{.State.ExitCode}}')
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "Vault seeder failed"
+            docker-compose -f docker-compose.test-vault.yml logs vault-seeder
+            exit 1
+          fi
+
+      - name: Start auth service
+        run: |
+          docker-compose -f docker-compose.test-vault.yml up -d github-auth-service
+
+          echo "Waiting for auth service..."
+          timeout 60 bash -c 'until curl -sf http://localhost:8080/health 2>/dev/null; do sleep 2; done' || {
+            docker-compose -f docker-compose.test-vault.yml logs github-auth-service
+            exit 1
+          }
+          echo "Auth service is ready"
+
+      - name: Run e2e tests
+        run: |
+          docker-compose -f docker-compose.test-vault.yml up test-runner
+
+          EXIT_CODE=$(docker inspect test-runner-vault --format='{{.State.ExitCode}}')
+          docker-compose -f docker-compose.test-vault.yml logs test-runner
+          exit $EXIT_CODE
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "=== Vault server logs ==="
+          docker-compose -f docker-compose.test-vault.yml logs vault-server
+          echo ""
+          echo "=== Vault seeder logs ==="
+          docker-compose -f docker-compose.test-vault.yml logs vault-seeder
+          echo ""
+          echo "=== Auth service logs ==="
+          docker-compose -f docker-compose.test-vault.yml logs github-auth-service
+          echo ""
+          echo "=== Test runner logs ==="
+          docker-compose -f docker-compose.test-vault.yml logs test-runner
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose -f docker-compose.test-vault.yml down -v --remove-orphans
+
   # Build-only job for PRs without secrets
   build:
     runs-on: ubuntu-latest
@@ -142,7 +230,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.23'
 
       - name: Build
         run: |
