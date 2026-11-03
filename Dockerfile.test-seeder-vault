@@ -1,7 +1,7 @@
 # Dockerfile.test-seeder-vault
 # Container that seeds HashiCorp Vault with test credentials
 
-FROM hashicorp/vault:1.15
+FROM hashicorp/vault:1.21
 
 RUN apk add --no-cache \
     bash \
