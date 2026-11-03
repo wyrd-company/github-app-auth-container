@@ -11,7 +11,7 @@ services:
   # HashiCorp Vault - Dev Server
   # ==========================================================================
   vault-server:
-    image: hashicorp/vault:1.15
+    image: hashicorp/vault:1.21
     container_name: test-vault-server
     environment:
       - VAULT_DEV_ROOT_TOKEN_ID=test-root-token
